@@ -13,8 +13,8 @@ def write_parameter_file(filename):
     config = ConfigParser.RawConfigParser()
     config.add_section('Spectrum')
     cmd_opt_dict = vars(options)
-    for i in cmd_opt_dict:
-        config.set('Spectrum', i, cmd_opt_dict[i])
+    for option in cmd_opt_dict:
+        config.set('Spectrum', option, cmd_opt_dict[option])
     cfgfile = open(filename,'w')
     config.write(cfgfile)
     cfgfile.close()
@@ -57,7 +57,6 @@ parser.add_option("-c", "--start",
                   dest="start", 
                   default=-1,
                   help="Start point of FFT")
-
 
 
 parser.add_option("-e", "--end",
@@ -224,7 +223,20 @@ if tables.isHDF5File(options.infilename):
         imean = timeline[:,1]
 
 else:
-    datafile = N.loadtxt(options.infilename)
+    skiprows=0
+    f = open(options.infilename, "U")
+    header=f.readline().strip()
+    if header == "SIMP":
+        skiprows=5
+    print header
+    for i in xrange(5):
+        line = f.readline().strip()
+        print line
+        if line.startswith("SW="):
+            sw=float(line[3:])
+            print sw
+    
+    datafile = N.loadtxt(options.infilename, skiprows=skiprows, comments="END")
     
     print "Data array has shape:",datafile.shape
     datasets = int(raw_input("How many datasets are there?: "))
@@ -237,18 +249,27 @@ else:
     num = datafile.shape[0]/datasets 
     s = num*usethis
     e = num*(usethis+1)
-    x = datafile[s:e,0]
     
     
     if datafile.shape[1] == 5:
+        x = datafile[s:e,0]
         rmean = datafile[s:e,1]
         rsigma = datafile[s:e,2]
         imean = datafile[s:e,3]
         isignam = datafile[s:e,4]
-    else:
+        dwell = x[1]-x[0]
+    elif datafile.shape[1] == 3:
+        x = datafile[s:e,0]
         rmean = datafile[s:e,1]
         imean = datafile[s:e,2]
-    dwell = x[1]-x[0]
+        dwell = x[1]-x[0]
+    elif datafile.shape[1] == 2:
+        x = N.linspace(0,num/sw,num)
+        rmean = datafile[s:e,0]
+        imean = datafile[s:e,1]
+        dwell = 1/sw
+    else:
+        raise ValueError
     # not needed anymore
     del datafile
 
@@ -315,10 +336,9 @@ elif options.zero == 0:
     fft_len=len(usable_data)#2**N.int(N.ceil(N.log2(len(usable_data)*16))) 
 else:
     fft_len=find_good_npoints(len(usable_data))
-    print "Finding good number of points for fast FFT: %i (was %i)"%(fft_len,len(usable_data))
+    print "Finding good number of points for faster FFT: %i (was %i)"%(fft_len,len(usable_data))
 
 print "Using only %.3f parts of signal"%(1.0/(float(len(usable_data))/fft_len))
-
 
 
 def shannon(spectrum):
@@ -340,7 +360,7 @@ def entropy(phi, spectrum, gamma):
     """
     Calculates the entropy of the spectrum (real part).
     p = phase
-    gamma should be adjusted such that the penalty and entropy are in the same magnitude
+    TODO: gamma should be adjusted such that the penalty and entropy are in the same magnitude
     """
 #   x = N.linspace(0,1,len(spectrum))
     Re = spectrum*N.exp(1j*phi)
@@ -358,8 +378,8 @@ def entropy_order2(phi, spectrum, gamma):
     en_shannon = shannon(Re) + penalty(Re)*gamma
     return en_shannon
 
-
-
+# windows from D. Traficante
+# signal enhancing
 def trafs_window(data, LW=10):
         n = len(data)
         t = dwell * N.arange(n)
@@ -378,6 +398,7 @@ def trafs_window(data, LW=10):
             P.show()
         return data*apod
 
+# resolution enhancing
 def trafr_window(data, LW=10):
         n = len(data)
         t = dwell * N.arange(n)
@@ -416,7 +437,7 @@ def phase(phi, signal_in):
     return first_point
     
 def simple_phase(signal_in):
-    # using bisect or ridder also possible but brentq is much faster, though
+    # using bisect or ridder also possible
     phi_correction = brentq(phase, -N.pi/2, N.pi/2, args=(signal_in))
     return phi_correction
 
@@ -538,18 +559,15 @@ if not options.batch:
     P.show()
 
 
-#print "Writing data to %s"%(options.outfilename)
 
 if options.parameterfilename:
+    print "Writing parameters to %s"%(options.parameterfilename)
     write_parameter_file(options.parameterfilename)
     
 if options.outfilename:
     print "Writing spectrum to %s"%(options.outfilename)
     out = open(options.outfilename,'w')
-    # anarray[start:stop].sum()
-    
     out.write("# FFT spectrum from file %s\n"%(options.infilename))
-    
     if len(attributes.keys()) > 0:
         out.write("# %s\n"%(table_list[d]))
         field_length = 0
@@ -559,8 +577,6 @@ if options.outfilename:
             out.write('# %-*s %-*s\n'%(field_length,key,field_length,attributes[key]))
     out.write('#t real imag\n')
     N.savetxt(out,N.array([freqs[mask],fastft.real[mask],fastft.imag[mask]]).T)
-    #for i in xrange(fft_len):
-    #   out.write('%e\t%e\t%e\n'%(freqs[i],fastft.real[i],fastft.imag[i]))  
     out.close()
     # save paramter file too
     parfile = os.path.splitext(options.outfilename)[0]+'.par'
