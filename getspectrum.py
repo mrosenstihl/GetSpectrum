@@ -1,12 +1,18 @@
 #!/usr/bin/env python
-import numpy as N
-import numpy.fft as FT
+import re,os
+from exceptions import IndexError
 from optparse import OptionParser
 import ConfigParser
+
+import numpy as N
+import numpy.fft as FT
 from scipy.optimize import brentq,fmin,anneal
-from exceptions import IndexError
-import tables
-import re,os
+
+try:
+    import tables
+    HAS_TABLES=True
+except:
+    HAS_TABLES=False
 
 
 def write_parameter_file(filename):
@@ -178,75 +184,81 @@ print "\n(INFO) Reading in file %s ...\n"%(options.infilename)
 attributes = {}
 tau = 0
 num_max = 0
-if tables.isHDF5File(options.infilename):
-    h = tables.openFile(options.infilename)
-    table_list = [f for f in h.walkGroups(h.root.data_pool) if f._v_children.has_key('accu_data')]
-    print "Found following accu_data objects:\n\n"
-    for i,tb in enumerate(table_list):
-        print "\tNumber:",i, tb
-        for key in tb._v_attrs._v_attrnamesuser:
-            val = tb._f_getAttr(key)
-            print "\t\t",key, '\t',val
-            if key.endswith('tau'):
-                if float(tb._f_getAttr(key)) > float(tau):
-                    #print "*** Was",tau
-                    tau = val
-                    #print "*** Now",tau
+if HAS_TABLES:
+    if tables.isHDF5File(options.infilename):
+        NOT_HDF=False
+        h = tables.openFile(options.infilename)
+        table_list = [f for f in h.walkGroups(h.root.data_pool) if f._v_children.has_key('accu_data')]
+        print "Found following accu_data objects:\n\n"
+        for i,tb in enumerate(table_list):
+            print "\tNumber:",i, tb
+            for key in tb._v_attrs._v_attrnamesuser:
+                val = tb._f_getAttr(key)
+                print "\t\t",key, '\t',val
+                if key.endswith('tau'):
+                    if float(tb._f_getAttr(key)) > float(tau):
+                        #print "*** Was",tau
+                        tau = val
+                        #print "*** Now",tau
 
-                    num_max = i
-        print
-    if len(table_list) > 1:
-        if  options.standard:
-            d=num_max
+                        num_max = i
+            print
+        if len(table_list) > 1:
+            if  options.standard:
+                d=num_max
+            else:
+                d = raw_input('Which one?: [%i]'%num_max)
         else:
-            d = raw_input('Which one?: [%i]'%num_max)
-    else:
-        d = 0
-    
-    if d == '':
-        d = num_max
-    else:
-        d = int(d)
-    
-    print "Using Number %i ..."%d
-    
-    for attribute in table_list[d]._v_attrs._v_attrnamesuser:
-        attributes[attribute] = table_list[d]._f_getAttr(attribute)
+            d = 0
+        
+        if d == '':
+            d = num_max
+        else:
+            d = int(d)
+        
+        print "Using Number %i ..."%d
+        
+        for attribute in table_list[d]._v_attrs._v_attrnamesuser:
+            attributes[attribute] = table_list[d]._f_getAttr(attribute)
 
-    timeline = table_list[d].accu_data.read()
-    dwell = table_list[d].indices.col('dwelltime')
-    x = N.arange(timeline.shape[0])*dwell
-    rmean = timeline[:,0]
-    if timeline.shape[1] > 2:
-        imean = timeline[:,2]
+        timeline = table_list[d].accu_data.read()
+        dwell = table_list[d].indices.col('dwelltime')
+        x = N.arange(timeline.shape[0])*dwell
+        rmean = timeline[:,0]
+        if timeline.shape[1] > 2:
+            imean = timeline[:,2]
+        else:
+            imean = timeline[:,1]
     else:
-        imean = timeline[:,1]
+        NOT_HDF=True
 
-else:
+if NOT_HDF or not HAS_TABLES:
     skiprows=0
+    comments="#"
     f = open(options.infilename, "U")
-    header=f.readline().strip()
-    if header == "SIMP":
-        skiprows=5
-    print header
-    for i in xrange(5):
-        line = f.readline().strip()
-        print line
-        if line.startswith("SW="):
-            sw=float(line[3:])
-            print sw
+    line=f.readline().strip()
+    if line.startswith("SIMP"):
+        print "(INFO) SIMPSON file found"
+        comments="END"
+        f.seek(0)
+        while line[0].isalpha():
+            line = f.readline().strip()
+            skiprows += 1
+            if line.startswith("SW="):
+                sw=float(line[3:])
+                print "(INFO) Spectral width: %.1f MHz"%(sw/1e6)
+    f.close()
+    datafile = N.loadtxt(options.infilename, skiprows=skiprows, comments=comments)
     
-    datafile = N.loadtxt(options.infilename, skiprows=skiprows, comments="END")
-    
-    print "Data array has shape:",datafile.shape
-    datasets = int(raw_input("How many datasets are there?: "))
-    #num_sets = datafile.shape[0]/datasets 
-    if datasets == 1:
+    print "(INFO) Data array has shape:",datafile.shape
+    datasets = raw_input("How many datasets are there?: ")
+    if datasets == "1" or datasets == '':
         usethis=0
+        datasets=1
     else:
         usethis = int(raw_input("Which one to use (0 to %i)?: "%(datasets-1)))
-    
-    num = datafile.shape[0]/datasets 
+    datasets = int(datasets)
+    num = datafile.shape[0]/int(datasets) 
     s = num*usethis
     e = num*(usethis+1)
     
@@ -302,14 +314,12 @@ def filter(data, freq):
 
 # Data filtering
 data = 1j*N.array(imean)+N.array(rmean)
-if float(options.filter)  > 0:
-    print "Filtering data ..."
-    data = filter(data, options.filter)
+if options.filter  > 0:
+    print "(INFO) Filtering data with low pass filter: %.3f Hz"%(options.filter)
+    data = filter(data, options.filter*dwell)
 
 
 extra_points=int(options.npoints)
-
-
 
 if int(options.start) >= 0:
     r_start = int(options.start)
@@ -317,13 +327,12 @@ else:
     r_start = data.real.argmax()+extra_points
 
 r_end = int(options.end)
-print "Skipping %i points of data"%r_start
+print "Skipping first %i points of data"%r_start
 if r_start > len(data):
     raise IndexError,"More points left out than data points exist!"
 
 
 usable_data = data[r_start:r_end]
-options.start = r_start
 
 if options.baseline > 0:
     usable_data -= data[-int(options.baseline):].mean()
@@ -517,9 +526,9 @@ fastft = FT.fftshift(FT.fft(usable_data, fft_len))
 freqs = FT.fftshift(FT.fftfreq(fft_len,dwell))
 
 # baseline correction of the spectrum
-print "Baseline correction of the spectrum"
-base = N.mean([fastft[-64:].mean(),fastft[:64].mean()])
-fastft -= base
+#print "Baseline correction of the spectrum"
+#base = N.mean([fastft[-64:].mean(),fastft[:64].mean()])
+#fastft -= base
 
 if str(options.normalize_maximum) == 'True':
     mask_max = ( -280e3 < freqs ) & ( freqs < 280e3 )
@@ -547,20 +556,20 @@ if not options.batch:
     P.legend()
     P.subplot(212)
     if str(options.mask) == 'True':
-        P.plot(freqs[mask]/1e3, fastft[mask])
+        P.plot(freqs[mask]/1e3, fastft.real[mask])
     else:
-        P.plot(freqs/1e3, fastft)
+        P.plot(freqs/1e3, fastft.real)
     null = (freqs == 0)
-    P.plot(freqs[null], fastft[null], 'bo')
-    
+    P.plot(freqs[null], fastft.real[null], 'r.', ms=3)
     P.xlabel('Frequency/kHz')
     P.ylabel('Signal/a.u.')
-    #P.xlim(-280,280)
+    P.ylim(fastft.real.min() - 0.1*fastft.real.min(), fastft.real.max() + 0.05*fastft.real.max())
     P.show()
 
 
 
 if options.parameterfilename:
+    options.start = r_start # store start point explicitly
     print "Writing parameters to %s"%(options.parameterfilename)
     write_parameter_file(options.parameterfilename)
     
@@ -575,8 +584,8 @@ if options.outfilename:
             if len(key) > field_length: field_length = len(key)
         for key in attributes.keys():
             out.write('# %-*s %-*s\n'%(field_length,key,field_length,attributes[key]))
-    out.write('#t real imag\n')
-    N.savetxt(out,N.array([freqs[mask],fastft.real[mask],fastft.imag[mask]]).T)
+    out.write('#%9s %9s %9s\n'%("t","real","imag"))
+    N.savetxt(out,N.array([freqs[mask],fastft.real[mask],fastft.imag[mask]]).T, fmt="%.4e")
     out.close()
     # save paramter file too
     parfile = os.path.splitext(options.outfilename)[0]+'.par'
