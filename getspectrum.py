@@ -251,7 +251,11 @@ if NOT_HDF or not HAS_TABLES:
     datafile = N.loadtxt(options.infilename, skiprows=skiprows, comments=comments)
     
     print "(INFO) Data array has shape:",datafile.shape
-    datasets = raw_input("How many datasets are there?: ")
+
+    if options.batch:
+        datasets = "1"
+    else:
+        datasets = raw_input("How many datasets are there?: ")
     if datasets == "1" or datasets == '':
         usethis=0
         datasets=1
@@ -539,7 +543,7 @@ if str(options.normalize_area) == 'True':
     print "Normalize to area"
     fastft /= fastft.real.sum()
 
-mask = N.ones(len(freqs), dtype='int')
+mask = N.ones(len(freqs), dtype='bool')
 if str(options.mask) == 'True':
     print "Spectrum from -280e3 to 280e3 kHz"
     mask = ( -280e3 < freqs ) & ( freqs < 280e3 ) 
